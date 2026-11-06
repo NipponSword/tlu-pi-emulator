@@ -4,6 +4,7 @@ import time
 _SPIN_NS = 300_000      # sleep until 0.3 ms before the target, then spin
 
 
+# --- precise wait: coarse sleep, then spin on the monotonic clock
 def wait_until(t_ns):
     """Return at monotonic time t_ns [ns] (late by a few us at most)."""
     rest = t_ns - time.monotonic_ns()
@@ -13,6 +14,7 @@ def wait_until(t_ns):
         pass
 
 
+# --- optional realtime priority and CPU pinning (needs root)
 def try_realtime(priority=50, cpu=None):
     """Best effort: SCHED_FIFO + pin to one CPU. Returns a note for the log."""
     notes = []
@@ -32,18 +34,23 @@ def try_realtime(priority=50, cpu=None):
     return ", ".join(notes)
 
 
+# --- collect timing samples and print a short summary
 class Stats:
     """min / mean / max / 99 % of a list of values in ns, shown in us."""
 
+    # --- start with no samples
     def __init__(self):
         self.v = []
 
+    # --- add one sample [ns]
     def add(self, x):
         self.v.append(x)
 
+    # --- number of samples
     def __len__(self):
         return len(self.v)
 
+    # --- one-line min / mean / 99 % / max in us
     def summary(self):
         if not self.v:
             return "no data"

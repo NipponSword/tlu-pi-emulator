@@ -38,12 +38,14 @@ EVENT_RISING_EDGE = 1
 EVENT_FALLING_EDGE = 2
 
 
+# --- struct gpiochip_info: chip name, label and number of lines
 class ChipInfo(ctypes.Structure):
     _fields_ = [("name", ctypes.c_char * GPIO_MAX_NAME_SIZE),
                 ("label", ctypes.c_char * GPIO_MAX_NAME_SIZE),
                 ("lines", ctypes.c_uint32)]
 
 
+# --- struct gpio_v2_line_attribute: one attribute (flags / output values / debounce)
 class LineAttribute(ctypes.Structure):
     # union { u64 flags; u64 values; u32 debounce_period_us; } -> one u64
     _fields_ = [("id", ctypes.c_uint32),
@@ -51,11 +53,13 @@ class LineAttribute(ctypes.Structure):
                 ("value", ctypes.c_uint64)]
 
 
+# --- struct gpio_v2_line_config_attribute: attribute + mask of lines it applies to
 class LineConfigAttribute(ctypes.Structure):
     _fields_ = [("attr", LineAttribute),
                 ("mask", ctypes.c_uint64)]
 
 
+# --- struct gpio_v2_line_config: common flags + up to 10 per-line attributes
 class LineConfig(ctypes.Structure):
     _fields_ = [("flags", ctypes.c_uint64),
                 ("num_attrs", ctypes.c_uint32),
@@ -63,6 +67,7 @@ class LineConfig(ctypes.Structure):
                 ("attrs", LineConfigAttribute * GPIO_V2_LINE_NUM_ATTRS_MAX)]
 
 
+# --- struct gpio_v2_line_request: which lines, how to configure them, fd returned
 class LineRequest(ctypes.Structure):
     _fields_ = [("offsets", ctypes.c_uint32 * GPIO_V2_LINES_MAX),
                 ("consumer", ctypes.c_char * GPIO_MAX_NAME_SIZE),
@@ -73,6 +78,7 @@ class LineRequest(ctypes.Structure):
                 ("fd", ctypes.c_int32)]
 
 
+# --- struct gpio_v2_line_values: bit values + mask for get/set
 class LineValues(ctypes.Structure):
     _fields_ = [("bits", ctypes.c_uint64),
                 ("mask", ctypes.c_uint64)]
@@ -83,6 +89,7 @@ EVENT_FMT = "=QIIII6I"
 EVENT_SIZE = struct.calcsize(EVENT_FMT)   # 48
 
 
+# --- ioctl number, same as the _IOR / _IOWR macros with type 0xB4
 def _ioc(direction, nr, size):
     return (direction << 30) | (size << 16) | (0xB4 << 8) | nr
 
@@ -94,6 +101,7 @@ GPIO_V2_LINE_GET_VALUES_IOCTL = _ioc(_IOWR, 0x0E, ctypes.sizeof(LineValues))
 GPIO_V2_LINE_SET_VALUES_IOCTL = _ioc(_IOWR, 0x0F, ctypes.sizeof(LineValues))
 
 
+# --- read name / label / number of lines of one /dev/gpiochipN
 def chip_info(path):
     fd = os.open(path, os.O_RDONLY)
     try:
@@ -104,6 +112,7 @@ def chip_info(path):
         os.close(fd)
 
 
+# --- find the gpiochip wired to the 40-pin header
 def find_header_chip():
     """Path of the gpiochip that drives the 40-pin header.
 
@@ -125,9 +134,11 @@ def find_header_chip():
     raise RuntimeError("no 40-pin header gpiochip found (seen: %s)" % found)
 
 
+# --- a requested group of GPIO lines (outputs or edge-detecting inputs)
 class Lines:
     """One line request: a set of GPIO lines with the same settings."""
 
+    # --- request the lines from the kernel and keep the returned fd
     def __init__(self, chip, offsets, flags, consumer="tlu-pi-emulator",
                  values=None, event_buffer_size=0):
         self.offsets = list(offsets)
@@ -154,23 +165,27 @@ class Lines:
         self._vals = LineValues()
 
     # -- outputs
+    # --- drive one output line high or low
     def set(self, value, index=0):
         self._vals.mask = 1 << index
         self._vals.bits = (1 << index) if value else 0
         fcntl.ioctl(self.fd, GPIO_V2_LINE_SET_VALUES_IOCTL, self._vals)
 
     # -- inputs
+    # --- read the level of one line
     def get(self, index=0):
         v = LineValues()
         v.mask = 1 << index
         fcntl.ioctl(self.fd, GPIO_V2_LINE_GET_VALUES_IOCTL, v)
         return (v.bits >> index) & 1
 
+    # --- block until an edge event is queued (or timeout)
     def wait_event(self, timeout):
         """True if an edge event is ready within timeout [s]."""
         r, _, _ = select.select([self.fd], [], [], timeout)
         return bool(r)
 
+    # --- pull queued edge events out of the kernel buffer
     def read_events(self, max_events=64):
         """List of (timestamp_ns, event_id, offset, seqno, line_seqno)."""
         buf = os.read(self.fd, EVENT_SIZE * max_events)
@@ -180,11 +195,13 @@ class Lines:
             out.append(f[:5])
         return out
 
+    # --- release the lines
     def close(self):
         if self.fd >= 0:
             os.close(self.fd)
             self.fd = -1
 
+    # --- context manager: 'with ... as lines:' closes them at the end
     def __enter__(self):
         return self
 
@@ -192,10 +209,12 @@ class Lines:
         self.close()
 
 
+# --- shortcut: one output line with an initial value
 def output(chip, offset, value=0):
     return Lines(chip, [offset], FLAG_OUTPUT, values=[value])
 
 
+# --- shortcut: one input line that reports rising (and/or falling) edges
 def edge_input(chip, offset, rising=True, falling=False, pull_down=True, buffer=1024):
     flags = FLAG_INPUT
     if rising:

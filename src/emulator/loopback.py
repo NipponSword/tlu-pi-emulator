@@ -17,6 +17,7 @@ from .pins import PIN_PMT, PIN_TRG
 from .timing import Stats, try_realtime, wait_until
 
 
+# --- send pulses on one pin, count edges on the other, report wake-up time
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -41,9 +42,11 @@ def main(argv=None):
         gc.disable()
         try:
             for _ in range(a.n):
+                # one pulse on the output pin
                 out.set(1)
                 wait_until(time.monotonic_ns() + width_ns)
                 out.set(0)
+                # wait up to one gap for the edge on the input pin
                 t_end = time.monotonic_ns() + gap_ns
                 # read whatever arrived, with the timeout of one gap
                 while time.monotonic_ns() < t_end:
@@ -59,6 +62,7 @@ def main(argv=None):
             out.set(0)
             gc.enable()
 
+    # result: every pulse must have been seen once
     print("sent %d, seen %d  -> %s" % (a.n, seen, "OK" if seen == a.n else "MISMATCH"))
     print("edge -> Python : %s" % wake.summary())
     return 0 if seen == a.n else 1

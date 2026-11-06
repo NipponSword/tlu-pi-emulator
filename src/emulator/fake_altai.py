@@ -21,6 +21,7 @@ from .pins import PIN_BUSY, PIN_TRG
 from .timing import Stats, try_realtime, wait_until
 
 
+# --- main loop: wait for trg_o, raise busy, hold it, drop it, collect stats
 def run(chip, trg_pin, busy_pin, busy_us, duration, count_only, timeout_us, rt, cpu):
     note = try_realtime(cpu=cpu) if rt else "normal priority"
     mode = "count only" if count_only else "busy %.1f us" % busy_us
@@ -29,6 +30,7 @@ def run(chip, trg_pin, busy_pin, busy_us, duration, count_only, timeout_us, rt, 
     busy_ns = int(busy_us * 1e3)
     timeout_ns = int(timeout_us * 1e3)
 
+    # counters and statistics
     n = 0
     late = 0
     lost = 0
@@ -44,29 +46,34 @@ def run(chip, trg_pin, busy_pin, busy_us, duration, count_only, timeout_us, rt, 
         gc.disable()
         try:
             while t_stop is None or time.monotonic_ns() < t_stop:
+                # idle: print the count once per second
                 if not trg.wait_event(0.1):
                     now = time.monotonic_ns()
                     if now > t_print:
                         t_print = now + 1_000_000_000
                         print("  %d triggers" % n, flush=True)
                     continue
+                # one or more trg_o edges are queued: answer each in turn
                 events = trg.read_events()
                 for k, (ts, ev_id, _off, _seq, line_seq) in enumerate(events):
                     if ev_id != gpiochar.EVENT_RISING_EDGE:
                         continue
                     if not count_only:
-                        busy.set(1)
+                        busy.set(1)            # answer as fast as possible
                     t_hi = time.monotonic_ns()
                     n += 1
                     if k:
                         queued += 1
+                    # gap in the kernel sequence number = edges lost
                     if last_seq is not None and line_seq > last_seq + 1:
                         lost += line_seq - last_seq - 1
                     last_seq = line_seq
+                    # reaction time: kernel edge timestamp -> busy high
                     dt = t_hi - ts
                     react.add(dt)
                     if dt > timeout_ns:
                         late += 1
+                    # hold busy for busy_us, then release
                     if not count_only:
                         wait_until(t_hi + busy_ns)
                         busy.set(0)
@@ -76,6 +83,7 @@ def run(chip, trg_pin, busy_pin, busy_us, duration, count_only, timeout_us, rt, 
             busy.set(0)
             gc.enable()
 
+    # summary
     print("triggers seen  : %d" % n)
     print("edge -> busy   : %s" % react.summary())
     if not count_only:
@@ -89,6 +97,7 @@ def run(chip, trg_pin, busy_pin, busy_us, duration, count_only, timeout_us, rt, 
     return n
 
 
+# --- command line options
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)

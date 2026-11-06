@@ -15,6 +15,7 @@ from .pins import PIN_PMT
 from .timing import try_realtime, wait_until
 
 
+# --- send n pulses of width_us at a fixed rate
 def run(chip, pin, n, rate, width_us, start_delay, rt):
     period_ns = int(1e9 / rate)
     width_ns = int(width_us * 1e3)
@@ -29,15 +30,18 @@ def run(chip, pin, n, rate, width_us, start_delay, rt):
         if start_delay > 0:
             print("start in %.1f s ..." % start_delay)
             time.sleep(start_delay)
+        # no garbage collection pauses while pulsing
         gc.disable()
         t0 = time.monotonic_ns() + 1_000_000
         late = 0
         t_last = t0
         try:
             for k in range(n):
+                # pulse k starts at t0 + k * period (no drift)
                 t_on = t0 + k * period_ns
                 if time.monotonic_ns() > t_on + period_ns // 2:
                     late += 1           # fell behind (rate too high for Python)
+                # high for width_ns, then low
                 wait_until(t_on)
                 out.set(1)
                 t_last = time.monotonic_ns()
@@ -49,6 +53,7 @@ def run(chip, pin, n, rate, width_us, start_delay, rt):
         finally:
             out.set(0)
             gc.enable()
+        # measured rate from first to last pulse
         dt = (t_last - t0) * 1e-9          # first to last pulse
     rate_real = (sent - 1) / dt if sent > 1 and dt > 0 else 0.0
     print("sent %d pulses in %.3f s (%.1f Hz)" % (sent, dt, rate_real))
@@ -58,6 +63,7 @@ def run(chip, pin, n, rate, width_us, start_delay, rt):
     return sent
 
 
+# --- command line options
 def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
