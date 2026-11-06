@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tlu-pi-emulator"
+version = "0.1.0"
+description = "Raspberry Pi 5 fake PMT + fake ALTAI for testing the momiji-tlu trigger board"
+requires-python = ">=3.9"
+dependencies = []
+
+[project.scripts]
+tlu-pulser = "emulator.pulser:main"
+tlu-fake-altai = "emulator.fake_altai:main"
+tlu-loopback = "emulator.loopback:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
