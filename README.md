@@ -8,8 +8,6 @@ Raspberry Pi 5 で momiji-tlu（トリガーボード / ECP5 Versa）を試験�
 
 追加のパッケージは要りません（Python 3 標準ライブラリのみ）。GPIO は Linux の GPIO キャラクタデバイス（uAPI v2）を直接使います。
 
-> **なぜ lgpio を使わないか**：lgpio のコールバックは、時刻順に並べるためにエッジ通知を 500 µs 遅らせてから呼ばれます（`lgPthAlerts.c` の `emit(count, nowGT-500000)`）。TLU の busy_timeout は最大 0xFFFF clk = 410 µs なので、lgpio だと busy が必ず間に合いません。カーネルのエッジイベントを直接読めば、割り込み駆動で取りこぼしがなく、反応は数十 µs 程度です。
-
 ## 配線（3.3 V 直結、GND 共通）
 
 | Pi（BCM / ピン番号） | 向き | Versa X4 | 信号 |
