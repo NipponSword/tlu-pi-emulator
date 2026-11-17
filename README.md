@@ -3,7 +3,7 @@
 Raspberry Pi 5 で momiji-tlu（トリガーボード / ECP5 Versa）を試験するための「偽テレスコープ」です。
 
 - **pulser**：偽 PMT。決まった数のパルスを決まったレートで出します。
-- **fake_altai**：偽 ALTAI（EUDET 風 DUT）。trg_o を受けるたびに busy を一定時間上げます。
+- **fake_altai**：偽 ALTAI（EUDET 風 DUT、ALPIDE DAQ ボードの動きに合わせています）。ラン外は busy を High のままにし、アーム中だけ下げます。trg_o を受けるたびにトリガー番号を振り、busy を一定時間上げます。busy 中に来たトリガーはキャンセルします。
 - **loopback**：Pi だけで動く自己テスト。TLU なしで、取りこぼしと反応時間を確認できます。
 
 追加のパッケージは要りません（Python 3 標準ライブラリのみ）。GPIO は Linux の GPIO キャラクタデバイス（uAPI v2）を直接使います。
@@ -87,14 +87,62 @@ run が終わったらターミナル 1 で Ctrl-C を押すと、`N_PI <数>` �
 
 **レートを上げると**：`--rate 2000` のように busy の時間（1 ms）より速くすると、busy 中に来たパルスが N_DROP として数えられます。N_ACCEPT ＋ N_DROP ＝ `N_PULSES` になれば正しいです。
 
+### ビームを模した長時間試験（ランダムなトリガー）
+
+`pulser --poisson` は、粒子がランダムに来るのと同じように、間隔を指数分布（平均 1/rate）で出します。`--duration` で時間を指定します。間隔が `--min-gap-us`（既定はパルス幅＋5 µs）より短くなるときは、その値まで延ばします（その回数は `short gaps` として表示されます）。
+
+例：KEK のビームを想定して、平均 500 Hz、5 分、ALTAI の busy は約 10 µs。
+
+Pi のターミナル 1（5 秒は busy を High にしてからアームし、330 秒で停止）：
+
+```
+python3 -m emulator.fake_altai --busy-us 10 --arm-after 5 --run-time 330
+```
+
+PC（すぐに実行。run が 5 秒以内に始まれば、ALTAI のアームより TLU の run 開始が先になります）：
+
+```
+python3 tlu_run.py --time 330 --dut-mask 0x01 --trg-o-width 255
+```
+
+Pi のターミナル 2（10 秒後からパルスを出し始める）：
+
+```
+python3 -m emulator.pulser --rate 500 --poisson --duration 300 --start-delay 10
+```
+
+**見るところ**：N_IN_HIT ＝ N_PULSES（約 150000）、N_ACCEPT ＋ N_DROP ＝ N_IN_HIT、N_ACCEPT ＝ イベント数 ＝ fake_altai の N_PI、N_TIMEOUT ＝ 0。却下率 N_DROP / N_IN_HIT は、rτ / (1 ＋ rτ) とほぼ同じになるはずです。τ は busy の時間＋Pi の反応時間（数 µs）で、500 Hz・τ ≈ 15 µs なら約 0.7 % です。
+
+## fake_altai の動き（ALTAI テレスコープ仕様に合わせたもの）
+
+| 状態 | busy | トリガー |
+|---|---|---|
+| 停止中（起動直後、`--arm-after` の待ち、ラン終了後） | High（強制 busy） | 無視（`ignored` として数えるだけ） |
+| アーム中・待機 | Low | 受理して番号を振り、busy を `--busy-us` だけ High にする |
+| アーム中・busy 中 | High | キャンセル（番号を使わない）。`--count-during-busy` にすると番号だけ進める（replica の動きが分かったとき用） |
+
+- トリガー番号は、アームのたびに `--first-id`（既定 0）から振り直します。
+- アームと停止の切り替え：`--arm-after <s>`（その秒数だけ busy を High にしてからアーム）、`--run-time <s>`（その秒数で停止して終了）、または `--manual`（Enter でアームと停止を切り替え、`q` ＋ Enter で終了）。
+- プログラムを終了すると busy のピンは解放されます。Versa の入力はプルダウンなので、Low になります。
+
+例：5 秒は busy を High のままにして（その間に PC で run を始める）、30 秒のランを 1 回行う。
+
+```
+python3 -m emulator.fake_altai --busy-us 1000 --arm-after 5 --run-time 30
+```
+
 ## 出力の読み方（fake_altai）
+
+ランの終わりごとに、次の行が出ます。
 
 | 行 | 意味 |
 |---|---|
-| `triggers seen` / `N_PI` | 受けた trg_o の数 |
+| `accepted` / `N_PI` | 受理したトリガーの数（`tlu_run.py --n-pi` に渡す） |
+| `trigger IDs` | 振った番号の範囲 |
+| `during busy` | busy 中に来てキャンセルしたトリガーの数。TLU 相手なら通常 0 です。0 でなければ、busy が X4-8 に届いていないか、極性（busy_invert）が違う可能性があります |
 | `edge -> busy` | trg_o の立ち上がり（カーネルの時刻）から busy を上げるまでの時間 |
 | `late (> 410 us)` | busy_timeout に間に合わなかった数。だいたい N_TIMEOUT になるはずです |
-| `trg_o arrived while busy was still high` | busy 中に次の trg_o が来た。busy が X4-8 に届いていないか、極性（busy_invert）が違う可能性があります |
+| `edges while stopped` | 停止中に来て無視したエッジの数 |
 
 ## テスト
 
