@@ -31,7 +31,7 @@ python3 -m emulator.loopback --help
 
 または `python3 -m venv .venv && .venv/bin/pip install -e .` とすると、`tlu-pulser`、`tlu-fake-altai`、`tlu-loopback` というコマンドとして使えます。
 
-`/dev/gpiochip*` は `gpio` グループで読めるので、通常のユーザー（Pi OS の初期ユーザー）で動きます。`--rt` を付けると SCHED_FIFO と CPU 固定を試します。反応時間のばらつきが減りますが、sudo が必要です。
+`/dev/gpiochip*` は `gpio` グループで読めるので、通常のユーザー（Pi OS の初期ユーザー）で動きます。`--rt` を付けると SCHED_FIFO と CPU 固定を試します。反応時間のばらつきが減りますが、sudo が必要です。sudo は PYTHONPATH を引き継がないので、`sudo PYTHONPATH=$PWD/src python3 -m emulator.fake_altai --busy-us 10 --rt` のように sudo の後ろで指定します。
 
 ### 0. Pi だけの自己テスト
 
