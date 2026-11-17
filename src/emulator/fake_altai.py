@@ -193,10 +193,12 @@ def run(chip, trg_pin, busy_pin, busy_us, arm_after, run_time, manual, count_onl
                         dev.disarm()
                     else:
                         dev.arm()
-                elif dev.armed and time.monotonic_ns() > t_print:
-                    # idle: show the count once per second
+                # show the count once per second (also while triggers keep coming)
+                if dev.armed and time.monotonic_ns() > t_print:
                     t_print = time.monotonic_ns() + 1_000_000_000
-                    print("  %d triggers" % dev.stats.accepted, flush=True)
+                    s = dev.stats
+                    print("  %d triggers, %d during busy, %d late"
+                          % (s.accepted, s.cancelled, s.late), flush=True)
         except KeyboardInterrupt:
             print()
         finally:
