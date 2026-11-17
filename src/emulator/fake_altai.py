@@ -11,6 +11,7 @@ like the real board as primary. --count-during-busy counts them instead
     python3 -m emulator.fake_altai --arm-after 5 --run-time 30  # one 30 s run
     python3 -m emulator.fake_altai --manual                     # Enter = arm/stop, q = quit
     python3 -m emulator.fake_altai --count-only                 # never drive busy, just count
+    python3 -m emulator.fake_altai --log react.csv              # + one CSV line per trigger
 
 The TLU waits at most busy_timeout (0xFFFF clk = 410 us) after trg_o for busy
 to go high, otherwise it counts N_TIMEOUT. "late" counts reactions slower
@@ -32,13 +33,14 @@ from .timing import Stats, try_realtime, wait_until
 
 # --- per-run counters (reset at every arm)
 class RunStats:
-    def __init__(self, first_id):
+    def __init__(self, first_id, keep_log=False):
         self.next_id = first_id     # ID given to the next accepted trigger
         self.first_id = first_id
         self.accepted = 0           # triggers that got an ID (and a busy pulse)
         self.cancelled = 0          # triggers that came while busy was high
         self.late = 0               # reactions slower than the TLU busy_timeout
         self.react = Stats()        # kernel edge timestamp -> busy high
+        self.log = [] if keep_log else None   # (kind, id, edge ns, reaction ns) per edge
 
     # --- print the end-of-run summary
     def report(self, run_no, count_only, timeout_us, count_during_busy):
@@ -57,7 +59,7 @@ class RunStats:
 # --- the fake DAQ board: busy line + arm state + trigger handling
 class FakeAltai:
     def __init__(self, trg, busy, busy_us, count_only, count_during_busy,
-                 first_id, timeout_us):
+                 first_id, timeout_us, log_path=None):
         self.trg = trg
         self.busy = busy
         self.busy_ns = int(busy_us * 1e3)
@@ -66,6 +68,7 @@ class FakeAltai:
         self.first_id = first_id
         self.timeout_us = timeout_us
         self.timeout_ns = int(timeout_us * 1e3)
+        self.log_path = log_path    # CSV with one line per trigger (--log)
         self.armed = False
         self.run_no = 0
         self.stats = None
@@ -84,7 +87,7 @@ class FakeAltai:
     def arm(self):
         self._drain()               # edges from before the run do not count
         self.run_no += 1
-        self.stats = RunStats(self.first_id)
+        self.stats = RunStats(self.first_id, keep_log=self.log_path is not None)
         self.armed = True
         self._drive(0)
         print("run %d armed (busy low), first ID %d" % (self.run_no, self.first_id), flush=True)
@@ -96,6 +99,20 @@ class FakeAltai:
         self._drive(1)
         self.armed = False
         self.stats.report(self.run_no, self.count_only, self.timeout_us, self.count_during_busy)
+        if self.log_path:
+            self._write_log()
+
+    # --- write the per-trigger CSV (after the run, so no file I/O while triggers come)
+    def _write_log(self):
+        path = self.log_path
+        if self.run_no > 1:             # one file per run: name_run2.csv, ...
+            stem, dot, ext = path.rpartition(".")
+            path = "%s_run%d.%s" % (stem, self.run_no, ext) if dot else "%s_run%d" % (path, self.run_no)
+        with open(path, "w") as f:
+            f.write("kind,id,edge_ns,react_ns\n")
+            for kind, tid, ts, dt in self.stats.log:
+                f.write("%s,%d,%d,%s\n" % (kind, tid, ts, "" if dt is None else dt))
+        print("log: %d lines -> %s" % (len(self.stats.log), path), flush=True)
 
     # --- throw away queued edges (counted as ignored)
     def _drain(self):
@@ -119,6 +136,8 @@ class FakeAltai:
             if ts < self.busy_until:
                 # came while busy was high: cancelled (primary) or counted (replica?)
                 s.cancelled += 1
+                if s.log is not None:
+                    s.log.append(("cancel", s.next_id if self.count_during_busy else -1, ts, None))
                 if self.count_during_busy:
                     s.next_id += 1
                 continue
@@ -132,6 +151,8 @@ class FakeAltai:
             s.react.add(dt)
             if dt > self.timeout_ns:
                 s.late += 1
+            if s.log is not None:
+                s.log.append(("accept", s.next_id - 1, ts, dt))
             # hold busy for busy_us, then release
             wait_until(t_hi + self.busy_ns)
             self._drive(0)
@@ -151,7 +172,7 @@ def wait_input(trg, manual, timeout):
 
 # --- main loop: arm / run / disarm according to the options
 def run(chip, trg_pin, busy_pin, busy_us, arm_after, run_time, manual, count_only,
-        count_during_busy, first_id, timeout_us, rt, cpu):
+        count_during_busy, first_id, timeout_us, rt, cpu, log_path=None):
     note = try_realtime(cpu=cpu) if rt else "normal priority"
     mode = "count only" if count_only else "busy %.1f us" % busy_us
     print("fake_altai: %s trg_o GPIO%d -> busy GPIO%d, %s (%s)"
@@ -159,7 +180,8 @@ def run(chip, trg_pin, busy_pin, busy_us, arm_after, run_time, manual, count_onl
 
     with gpiochar.edge_input(chip, trg_pin) as trg, \
             gpiochar.output(chip, busy_pin, 0 if count_only else 1) as busy:
-        dev = FakeAltai(trg, busy, busy_us, count_only, count_during_busy, first_id, timeout_us)
+        dev = FakeAltai(trg, busy, busy_us, count_only, count_during_busy, first_id, timeout_us,
+                        log_path)
         now = time.monotonic_ns()
         t_arm = None if manual else now + int(arm_after * 1e9)
         t_stop = None
@@ -193,10 +215,12 @@ def run(chip, trg_pin, busy_pin, busy_us, arm_after, run_time, manual, count_onl
                         dev.disarm()
                     else:
                         dev.arm()
-                elif dev.armed and time.monotonic_ns() > t_print:
-                    # idle: show the count once per second
+                # show the count once per second (also while triggers keep coming)
+                if dev.armed and time.monotonic_ns() > t_print:
                     t_print = time.monotonic_ns() + 1_000_000_000
-                    print("  %d triggers" % dev.stats.accepted, flush=True)
+                    s = dev.stats
+                    print("  %d triggers, %d during busy, %d late"
+                          % (s.accepted, s.cancelled, s.late), flush=True)
         except KeyboardInterrupt:
             print()
         finally:
@@ -226,6 +250,8 @@ def main(argv=None):
     p.add_argument("--count-only", action="store_true", help="never drive busy, only count trg_o")
     p.add_argument("--timeout-us", type=float, default=0xFFFF / 160.0,
                    help="TLU busy_timeout to compare with [us] (default 0xFFFF clk = 409.6)")
+    p.add_argument("--log", metavar="CSV",
+                   help="write one line per trigger (kind,id,edge_ns,react_ns) after each run")
     p.add_argument("--trg-pin", type=int, default=PIN_TRG)
     p.add_argument("--busy-pin", type=int, default=PIN_BUSY)
     p.add_argument("--chip", help="gpiochip path (default: auto, pinctrl-rp1)")
@@ -237,7 +263,7 @@ def main(argv=None):
         a.run_time = a.time
     chip = a.chip or gpiochar.find_header_chip()
     run(chip, a.trg_pin, a.busy_pin, a.busy_us, a.arm_after, a.run_time, a.manual,
-        a.count_only, a.count_during_busy, a.first_id, a.timeout_us, a.rt, a.cpu)
+        a.count_only, a.count_during_busy, a.first_id, a.timeout_us, a.rt, a.cpu, a.log)
     return 0
 
 
