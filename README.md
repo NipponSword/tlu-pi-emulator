@@ -87,6 +87,32 @@ run が終わったらターミナル 1 で Ctrl-C を押すと、`N_PI <数>` �
 
 **レートを上げると**：`--rate 2000` のように busy の時間（1 ms）より速くすると、busy 中に来たパルスが N_DROP として数えられます。N_ACCEPT ＋ N_DROP ＝ `N_PULSES` になれば正しいです。
 
+### ビームを模した長時間試験（ランダムなトリガー）
+
+`pulser --poisson` は、粒子がランダムに来るのと同じように、間隔を指数分布（平均 1/rate）で出します。`--duration` で時間を指定します。間隔が `--min-gap-us`（既定はパルス幅＋5 µs）より短くなるときは、その値まで延ばします（その回数は `short gaps` として表示されます）。
+
+例：KEK のビームを想定して、平均 500 Hz、5 分、ALTAI の busy は約 10 µs。
+
+Pi のターミナル 1（5 秒は busy を High にしてからアームし、330 秒で停止）：
+
+```
+python3 -m emulator.fake_altai --busy-us 10 --arm-after 5 --run-time 330
+```
+
+PC（すぐに実行。run が 5 秒以内に始まれば、ALTAI のアームより TLU の run 開始が先になります）：
+
+```
+python3 tlu_run.py --time 330 --dut-mask 0x01 --trg-o-width 255
+```
+
+Pi のターミナル 2（10 秒後からパルスを出し始める）：
+
+```
+python3 -m emulator.pulser --rate 500 --poisson --duration 300 --start-delay 10
+```
+
+**見るところ**：N_IN_HIT ＝ N_PULSES（約 150000）、N_ACCEPT ＋ N_DROP ＝ N_IN_HIT、N_ACCEPT ＝ イベント数 ＝ fake_altai の N_PI、N_TIMEOUT ＝ 0。却下率 N_DROP / N_IN_HIT は、rτ / (1 ＋ rτ) とほぼ同じになるはずです。τ は busy の時間＋Pi の反応時間（数 µs）で、500 Hz・τ ≈ 15 µs なら約 0.7 % です。
+
 ## fake_altai の動き（ALTAI テレスコープ仕様に合わせたもの）
 
 | 状態 | busy | トリガー |
