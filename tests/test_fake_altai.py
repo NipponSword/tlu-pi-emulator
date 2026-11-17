@@ -46,9 +46,9 @@ class FakeIn:
         return self.batches.pop(0) if self.batches else []
 
 
-def make(count_during_busy=False, first_id=0, count_only=False):
+def make(count_during_busy=False, first_id=0, count_only=False, log_path=None):
     trg, busy = FakeIn(), FakeOut()
-    dev = FakeAltai(trg, busy, BUSY_US, count_only, count_during_busy, first_id, 409.6)
+    dev = FakeAltai(trg, busy, BUSY_US, count_only, count_during_busy, first_id, 409.6, log_path)
     return dev, trg, busy
 
 
@@ -139,6 +139,26 @@ def test_count_only():
     dev.handle_events()
     dev.disarm()
     assert busy.levels == [] and dev.stats.accepted == 1
+
+
+# --- --log writes one CSV line per edge (accepted and cancelled), one file per run
+def test_log_csv():
+    import tempfile
+    d = tempfile.mkdtemp()
+    path = os.path.join(d, "react.csv")
+    dev, trg, busy = make(log_path=path)
+    dev.arm()
+    t0 = time.monotonic_ns()
+    trg.push(t0, t0 + 10_000)
+    dev.handle_events()
+    dev.disarm()
+    lines = open(path).read().splitlines()
+    assert lines[0] == "kind,id,edge_ns,react_ns"
+    assert lines[1].startswith("accept,0,%d," % t0)
+    assert lines[2] == "cancel,-1,%d," % (t0 + 10_000)
+    dev.arm()
+    dev.disarm()
+    assert os.path.exists(os.path.join(d, "react_run2.csv"))
 
 
 # --- run without pytest
